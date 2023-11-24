@@ -2,55 +2,56 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import math
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 
-class RNN(nn.Module):
-    
-    def __init__(self, vocab_size, output_size, embedding_dim, hidden_dim, n_layers, dropout=0.5):
-        super(RNN, self).__init__()
-      
-        
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, n_layers, dropout=dropout, batch_first=True)
-        
-        
-        self.vocab_size = vocab_size
-        self.output_size = output_size
-        self.embedding_dim = embedding_dim
+class LSTM(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, num_layers, dropout_rate, 
+                tie_weights):
+                
+        super().__init__()
+        self.num_layers = num_layers
         self.hidden_dim = hidden_dim
-        self.n_layers = n_layers
-        
-     
-        self.fc = nn.Linear(hidden_dim, output_size)
-    
-    
-    def forward(self, x, hidden):
-        batch_size = x.size(0)
-        x=x.long()
-        
-        embeds = self.embedding(x)
-        lstm_out, hidden = self.lstm(embeds, hidden)
-        
-        lstm_out = lstm_out.contiguous().view(-1, self.hidden_dim)
-        
-        out = self.fc(lstm_out)
-        
-        out = out.view(batch_size, -1, self.output_size)
-        
-        out = out[:, -1]
+        self.embedding_dim = embedding_dim
 
-        return out, hidden
-    
-    
-    def init_hidden(self, batch_size):
-        weights = next(self.parameters()).data
-        if(device=='cuda:0'):
-            hidden = (weights.new(self.n_layers, batch_size, self.hidden_dim).zero_().cuda(), 
-                     weights.new(self.n_layers, batch_size, self.hidden_dim).zero_().cuda())
-        else:
-            hidden = (weights.new(self.n_layers, batch_size, self.hidden_dim).zero_(),
-                     weights.new(self.n_layers, batch_size, self.hidden_dim).zero_())
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=num_layers, 
+                    dropout=dropout_rate, batch_first=True)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc = nn.Linear(hidden_dim, vocab_size)
         
-        return hidden
+        if tie_weights:
+            assert embedding_dim == hidden_dim, 'cannot tie, check dims'
+            self.embedding.weight = self.fc.weight
+        self.init_weights()
+
+    def forward(self, src, hidden):
+        embedding = self.embedding(src)
+        output, hidden = self.lstm(embedding, hidden)          
+        output = self.dropout(output) 
+        prediction = self.fc(output)
+        return prediction, hidden
+    
+    def init_weights(self):
+        init_range_emb = 0.1
+        init_range_other = 1/math.sqrt(self.hidden_dim)
+        self.embedding.weight.data.uniform_(-init_range_emb, init_range_emb)
+        self.fc.weight.data.uniform_(-init_range_other, init_range_other)
+        self.fc.bias.data.zero_()
+        for i in range(self.num_layers):
+            self.lstm.all_weights[i][0] = torch.FloatTensor(self.embedding_dim,
+                    self.hidden_dim).uniform_(-init_range_other, init_range_other) 
+            self.lstm.all_weights[i][1] = torch.FloatTensor(self.hidden_dim, 
+                    self.hidden_dim).uniform_(-init_range_other, init_range_other) 
+
+    def init_hidden(self, batch_size, device):
+        hidden = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(device)
+        cell = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(device)
+        return hidden, cell
+    
+    def detach_hidden(self, hidden):
+        hidden, cell = hidden
+        hidden = hidden.detach()
+        cell = cell.detach()
+        return hidden, cell
