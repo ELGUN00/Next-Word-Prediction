@@ -27,7 +27,7 @@ def test(next_word):
         try:
             with st.spinner('Wait for it...'):
                 time.sleep(1)
-            r = requests.get(f'http://api:8080/{next_word}')
+            r = requests.get(f'http://api:8080/predict/{next_word}')
             data = r.json().get('next_word')
             with c2:
                 st.write(""" ### The next word is : """)
